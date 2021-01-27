@@ -1,3 +1,4 @@
+import { HandlerRegister } from './utils/handler-register';
 import { Injectable, Type } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import 'reflect-metadata';
@@ -12,6 +13,7 @@ import {
   ICommandPublisher,
 } from './interfaces/index';
 import { ObservableBus } from './utils/observable-bus';
+import { getClassName } from './utils';
 
 export type CommandHandlerType = Type<ICommandHandler<ICommand>>;
 
@@ -19,7 +21,10 @@ export type CommandHandlerType = Type<ICommandHandler<ICommand>>;
 export class CommandBus<CommandBase extends ICommand = ICommand>
   extends ObservableBus<CommandBase>
   implements ICommandBus<CommandBase> {
-  private handlers = new Map<string, ICommandHandler<CommandBase>>();
+  private handlers = new HandlerRegister<ICommandHandler<ICommand>>(
+    this.moduleRef,
+    COMMAND_HANDLER_METADATA,
+  );
   private _publisher: ICommandPublisher<CommandBase>;
 
   constructor(private readonly moduleRef: ModuleRef) {
@@ -35,43 +40,23 @@ export class CommandBus<CommandBase extends ICommand = ICommand>
     this._publisher = _publisher;
   }
 
-  execute<T extends CommandBase>(command: T): Promise<any> {
-    const commandName = this.getCommandName(command as any);
-    const handler = this.handlers.get(commandName);
+  async execute<T extends CommandBase>(command: T): Promise<any> {
+    const handler = await this.handlers.get(command);
     if (!handler) {
-      throw new CommandHandlerNotFoundException(commandName);
+      throw new CommandHandlerNotFoundException(getClassName(command));
     }
     this.subject$.next(command);
     return handler.execute(command);
   }
 
-  bind<T extends CommandBase>(handler: ICommandHandler<T>, name: string) {
-    this.handlers.set(name, handler);
-  }
-
-  register(handlers: CommandHandlerType[] = []) {
+  register(handlers: CommandHandlerType[] = []): void {
     handlers.forEach((handler) => this.registerHandler(handler));
   }
 
-  protected registerHandler(handler: CommandHandlerType) {
-    const instance = this.moduleRef.get(handler, { strict: false });
-    if (!instance) {
-      return;
-    }
-    const target = this.reflectCommandName(handler);
-    if (!target) {
+  protected registerHandler(handler: CommandHandlerType): void {
+    if (!this.handlers.registerHandler(handler)) {
       throw new InvalidCommandHandlerException();
     }
-    this.bind(instance as ICommandHandler<CommandBase>, target.name);
-  }
-
-  private getCommandName(command: Function): string {
-    const { constructor } = Object.getPrototypeOf(command);
-    return constructor.name as string;
-  }
-
-  private reflectCommandName(handler: CommandHandlerType): FunctionConstructor {
-    return Reflect.getMetadata(COMMAND_HANDLER_METADATA, handler);
   }
 
   private useDefaultPublisher() {

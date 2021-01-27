@@ -16,6 +16,7 @@ import {
   ISaga,
 } from './interfaces';
 import { ObservableBus } from './utils';
+import { HandlerRegister } from './utils/handler-register';
 
 export type EventHandlerType<EventBase extends IEvent = IEvent> = Type<
   IEventHandler<EventBase>
@@ -27,6 +28,10 @@ export class EventBus<EventBase extends IEvent = IEvent>
   implements IEventBus<EventBase>, OnModuleDestroy {
   protected getEventName: (event: EventBase) => string;
   protected readonly subscriptions: Subscription[];
+  private handlers = new HandlerRegister<IEventHandler<EventBase>>(
+    this.moduleRef,
+    EVENTS_HANDLER_METADATA,
+  );
 
   private _publisher: IEventPublisher<EventBase>;
 
@@ -63,10 +68,17 @@ export class EventBus<EventBase extends IEvent = IEvent>
     return (events || []).map((event) => this._publisher.publish(event));
   }
 
-  bind(handler: IEventHandler<EventBase>, name: string) {
+  bind(_handler: EventHandlerType<EventBase>, name: string) {
     const stream$ = name ? this.ofEventName(name) : this.subject$;
-    const subscription = stream$.subscribe((event) => handler.handle(event));
+    const subscription = stream$.subscribe(this.subscribeCallbackFactory());
     this.subscriptions.push(subscription);
+  }
+
+  private subscribeCallbackFactory() {
+    return async (event: EventBase) => {
+      const instance = await this.handlers.get(event);
+      instance.handle(event);
+    };
   }
 
   registerSagas(types: Type<unknown>[] = []) {
@@ -89,14 +101,10 @@ export class EventBus<EventBase extends IEvent = IEvent>
   }
 
   protected registerHandler(handler: EventHandlerType<EventBase>) {
-    const instance = this.moduleRef.get(handler, { strict: false });
-    if (!instance) {
-      return;
+    if (this.handlers.registerHandler(handler)) {
+      const eventsNames = this.reflectEventsNames(handler);
+      eventsNames.map((event) => this.bind(handler, event.name));
     }
-    const eventsNames = this.reflectEventsNames(handler);
-    eventsNames.map((event) =>
-      this.bind(instance as IEventHandler<EventBase>, event.name),
-    );
   }
 
   protected ofEventName(name: string) {

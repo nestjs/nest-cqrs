@@ -12,6 +12,8 @@ import {
   IQueryPublisher,
   IQueryResult,
 } from './interfaces';
+import { getClassName } from './utils';
+import { HandlerRegister } from './utils/handler-register';
 import { ObservableBus } from './utils/observable-bus';
 
 export type QueryHandlerType<
@@ -23,7 +25,10 @@ export type QueryHandlerType<
 export class QueryBus<QueryBase extends IQuery = IQuery>
   extends ObservableBus<QueryBase>
   implements IQueryBus<QueryBase> {
-  private handlers = new Map<string, IQueryHandler<QueryBase, IQueryResult>>();
+  private handlers = new HandlerRegister<IQueryHandler<QueryBase, any>>(
+    this.moduleRef,
+    QUERY_HANDLER_METADATA,
+  );
   private _publisher: IQueryPublisher<QueryBase>;
 
   constructor(private readonly moduleRef: ModuleRef) {
@@ -42,49 +47,22 @@ export class QueryBus<QueryBase extends IQuery = IQuery>
   async execute<T extends QueryBase, TResult = any>(
     query: T,
   ): Promise<TResult> {
-    const queryName = this.getQueryName((query as any) as Function);
-    const handler = this.handlers.get(queryName);
+    const handler = await this.handlers.get(query);
     if (!handler) {
-      throw new QueryHandlerNotFoundException(queryName);
+      throw new QueryHandlerNotFoundException(getClassName(query));
     }
-
     this.subject$.next(query);
-    const result = await handler.execute(query);
-    return result as TResult;
+    return handler.execute(query);
   }
 
-  bind<T extends QueryBase, TResult = any>(
-    handler: IQueryHandler<T, TResult>,
-    name: string,
-  ) {
-    this.handlers.set(name, handler);
-  }
-
-  register(handlers: QueryHandlerType<QueryBase>[] = []) {
+  register(handlers: QueryHandlerType<QueryBase>[] = []): void {
     handlers.forEach((handler) => this.registerHandler(handler));
   }
 
-  protected registerHandler(handler: QueryHandlerType<QueryBase>) {
-    const instance = this.moduleRef.get(handler, { strict: false });
-    if (!instance) {
-      return;
-    }
-    const target = this.reflectQueryName(handler);
-    if (!target) {
+  protected registerHandler(handler: QueryHandlerType<QueryBase>): void {
+    if (!this.handlers.registerHandler(handler)) {
       throw new InvalidQueryHandlerException();
     }
-    this.bind(instance as IQueryHandler<QueryBase, IQueryResult>, target.name);
-  }
-
-  private getQueryName(query: Function): string {
-    const { constructor } = Object.getPrototypeOf(query);
-    return constructor.name as string;
-  }
-
-  private reflectQueryName(
-    handler: QueryHandlerType<QueryBase>,
-  ): FunctionConstructor {
-    return Reflect.getMetadata(QUERY_HANDLER_METADATA, handler);
   }
 
   private useDefaultPublisher() {
